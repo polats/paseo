@@ -1,5 +1,12 @@
 import { Text } from "react-native";
-import { forwardRef, useCallback, useMemo, useState, type ComponentProps } from "react";
+import {
+  forwardRef,
+  useCallback,
+  useMemo,
+  useState,
+  type ComponentProps,
+  type MouseEvent,
+} from "react";
 import type {
   CodeBlockRendererProps,
   LinkRendererProps,
@@ -7,6 +14,8 @@ import type {
 } from "react-native-enriched-markdown";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { useFileLink } from "@/assistant-file-links";
+import { FileLinkContextMenuContent } from "@/assistant-file-links/context-menu";
+import { ContextMenu, useContextMenu } from "@/components/ui/context-menu";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import { HighlightedCodeBlock } from "@/components/highlighted-code-block";
 import type { Theme } from "@/styles/theme";
@@ -30,8 +39,34 @@ function WebCodeBlock({ code, language }: CodeBlockRendererProps) {
 // The library styles links inline, so a stylesheet :hover rule cannot underline them.
 const LINK_HOVER_STYLE = { textDecoration: "underline" } as const;
 
-function WebLink({ link, anchorProps, children }: LinkRendererProps) {
-  const { tooltipPath, onHoverIn } = useFileLink(markdownLinkSource(link.url, link.sourceType));
+// File links get Paseo's file actions on right click; web URLs keep the
+// browser's own menu.
+function WebLink(props: LinkRendererProps) {
+  return (
+    <ContextMenu>
+      <WebLinkBody {...props} />
+    </ContextMenu>
+  );
+}
+
+function WebLinkBody({ link, anchorProps, children }: LinkRendererProps) {
+  const source = useMemo(
+    () => markdownLinkSource(link.url, link.sourceType),
+    [link.url, link.sourceType],
+  );
+  const fileLink = useFileLink(source);
+  const { tooltipPath, onHoverIn, canResolveFile } = fileLink;
+  const contextMenu = useContextMenu();
+  const handleContextMenu = useCallback(
+    (event: MouseEvent<HTMLAnchorElement>) => {
+      if (!canResolveFile) return;
+      event.preventDefault();
+      event.stopPropagation();
+      contextMenu.setAnchorRect({ x: event.pageX, y: event.pageY, width: 0, height: 0 });
+      contextMenu.setOpen(true);
+    },
+    [canResolveFile, contextMenu],
+  );
   const [hovered, setHovered] = useState(false);
   const handleMouseEnter = useCallback(() => setHovered(true), []);
   const handleMouseLeave = useCallback(() => setHovered(false), []);
@@ -49,23 +84,29 @@ function WebLink({ link, anchorProps, children }: LinkRendererProps) {
       style={anchorStyle}
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
+      onContextMenu={handleContextMenu}
     >
       {children}
     </a>
   );
   return (
-    <Tooltip delayDuration={400}>
-      <TooltipTrigger asChild onHoverIn={onHoverIn}>
-        <InlineLinkTrigger>{anchor}</InlineLinkTrigger>
-      </TooltipTrigger>
-      {tooltipPath ? (
-        <TooltipContent side="top" align="start" maxWidth={520}>
-          <Text selectable={false} style={styles.tooltipPath}>
-            {tooltipPath}
-          </Text>
-        </TooltipContent>
+    <>
+      <Tooltip delayDuration={400}>
+        <TooltipTrigger asChild onHoverIn={onHoverIn}>
+          <InlineLinkTrigger>{anchor}</InlineLinkTrigger>
+        </TooltipTrigger>
+        {tooltipPath ? (
+          <TooltipContent side="top" align="start" maxWidth={520}>
+            <Text selectable={false} style={styles.tooltipPath}>
+              {tooltipPath}
+            </Text>
+          </TooltipContent>
+        ) : null}
+      </Tooltip>
+      {canResolveFile && contextMenu.open ? (
+        <FileLinkContextMenuContent link={fileLink} source={source} />
       ) : null}
-    </Tooltip>
+    </>
   );
 }
 // TooltipTrigger also supplies native Pressable handlers; forward only DOM events.

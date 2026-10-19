@@ -23,6 +23,10 @@ export interface UseFileLinkResult {
   onHoverIn: () => void;
   onPress: () => void;
   open: (source: AssistantFileLinkSource, disposition: OpenFileDisposition) => void;
+  /** True when the link names a file, possibly one only the daemon can find. */
+  canResolveFile: boolean;
+  /** The file this link names, looking it up if needed; null when there is none. */
+  resolveTarget: () => Promise<InlinePathTarget | null>;
 }
 
 export interface AssistantFileLinkActions {
@@ -74,20 +78,22 @@ export function useFileLink(source: AssistantFileLinkSource): UseFileLinkResult 
     [resolution, serverId, workspaceRoot],
   );
 
+  const lookup = useCallback(() => {
+    if (resolution.kind !== "needsLookup") {
+      throw new Error("Assistant file link lookup requested for a sync link.");
+    }
+    return fetchDaemonResolution({
+      ambiguousQuery: resolution.ambiguousQuery,
+      token: resolution.token,
+      target: resolution.target,
+      workspaceRoot,
+      getDirectorySuggestions: context.getDirectorySuggestions,
+    });
+  }, [context.getDirectorySuggestions, resolution, workspaceRoot]);
+
   const query = useQuery({
     queryKey,
-    queryFn: () => {
-      if (resolution.kind !== "needsLookup") {
-        throw new Error("Assistant file link lookup requested for a sync link.");
-      }
-      return fetchDaemonResolution({
-        ambiguousQuery: resolution.ambiguousQuery,
-        token: resolution.token,
-        target: resolution.target,
-        workspaceRoot,
-        getDirectorySuggestions: context.getDirectorySuggestions,
-      });
-    },
+    queryFn: lookup,
     enabled: false,
     retry: 0,
     staleTime: Infinity,
@@ -110,20 +116,25 @@ export function useFileLink(source: AssistantFileLinkSource): UseFileLinkResult 
       return;
     }
 
-    void queryClient.prefetchQuery({
-      queryKey,
-      queryFn: () =>
-        fetchDaemonResolution({
-          ambiguousQuery: resolution.ambiguousQuery,
-          token: resolution.token,
-          target: resolution.target,
-          workspaceRoot,
-          getDirectorySuggestions: context.getDirectorySuggestions,
-        }),
-      retry: 0,
-      staleTime: Infinity,
-    });
+    void queryClient.prefetchQuery({ queryKey, queryFn: lookup, retry: 0, staleTime: Infinity });
   });
+
+  const resolveTarget = useStableEvent(async (): Promise<InlinePathTarget | null> => {
+    if (resolution.kind === "resolved") {
+      return resolution.value.kind === "file" ? resolution.value.target : null;
+    }
+    try {
+      return await queryClient.fetchQuery({
+        queryKey,
+        queryFn: lookup,
+        retry: 0,
+        staleTime: Infinity,
+      });
+    } catch {
+      return null;
+    }
+  });
+  const canResolveFile = resolution.kind === "needsLookup" || resolution.value.kind === "file";
 
   const onPress = useStableEvent(() => {
     open(stableSource, "preferred");
@@ -138,8 +149,8 @@ export function useFileLink(source: AssistantFileLinkSource): UseFileLinkResult 
 
   const tooltipPath = target ? formatFileLinkTooltipPath({ target, workspaceRoot }) : null;
   return useMemo(
-    () => ({ target, tooltipPath, onHoverIn, onPress, open }),
-    [target, tooltipPath, onHoverIn, onPress, open],
+    () => ({ target, tooltipPath, onHoverIn, onPress, open, canResolveFile, resolveTarget }),
+    [target, tooltipPath, onHoverIn, onPress, open, canResolveFile, resolveTarget],
   );
 }
 
