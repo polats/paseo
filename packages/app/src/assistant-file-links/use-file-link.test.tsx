@@ -326,3 +326,54 @@ describe("useFileLink", () => {
 });
 
 const WorkspaceSwitchContext = React.createContext<(workspaceRoot: string) => void>(() => {});
+
+describe("useFileLink resolveTarget", () => {
+  it("looks up a bare filename through the daemon", async () => {
+    const getDirectorySuggestions = vi.fn(async () =>
+      resolvedSuggestions([{ path: "docs/dumm.md", kind: "file" }]),
+    );
+    const { result } = renderHook(() => useFileLink(SOURCE), {
+      wrapper: createWrapper({ client: { getDirectorySuggestions }, openedFiles: [] }),
+    });
+
+    expect(result.current.canResolveFile).toBe(true);
+    await expect(result.current.resolveTarget()).resolves.toMatchObject({
+      path: "/Users/test/project/docs/dumm.md",
+    });
+    expect(getDirectorySuggestions).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns null when the daemon finds no file", async () => {
+    const getDirectorySuggestions = vi.fn(async () => resolvedSuggestions([]));
+    const { result } = renderHook(() => useFileLink(SOURCE), {
+      wrapper: createWrapper({ client: { getDirectorySuggestions }, openedFiles: [] }),
+    });
+
+    await expect(result.current.resolveTarget()).resolves.toBeNull();
+  });
+
+  it("resolves an explicit path without asking the daemon", async () => {
+    const getDirectorySuggestions = vi.fn(async () => resolvedSuggestions([]));
+    const { result } = renderHook(() => useFileLink({ href: "src/components/message.tsx#L33" }), {
+      wrapper: createWrapper({ client: { getDirectorySuggestions }, openedFiles: [] }),
+    });
+
+    expect(result.current.canResolveFile).toBe(true);
+    await expect(result.current.resolveTarget()).resolves.toMatchObject({
+      path: "/Users/test/project/src/components/message.tsx",
+      lineStart: 33,
+    });
+    expect(getDirectorySuggestions).not.toHaveBeenCalled();
+  });
+
+  it("does not treat a web URL as a file", async () => {
+    const getDirectorySuggestions = vi.fn(async () => resolvedSuggestions([]));
+    const { result } = renderHook(
+      () => useFileLink({ href: "https://example.com/docs", text: "https://example.com/docs" }),
+      { wrapper: createWrapper({ client: { getDirectorySuggestions }, openedFiles: [] }) },
+    );
+
+    expect(result.current.canResolveFile).toBe(false);
+    await expect(result.current.resolveTarget()).resolves.toBeNull();
+  });
+});
