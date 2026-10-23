@@ -217,8 +217,11 @@ import {
 } from "./session/agent-updates/agent-updates-service.js";
 import { expandTilde } from "../utils/path.js";
 import {
+  resolveParentDirectoryQuery,
   searchDirectoryEntries,
   WORKSPACE_SEARCH_HIDDEN_DIRECTORIES,
+  type DirectorySuggestionMatchMode,
+  type SearchDirectoryEntriesOptions,
 } from "../utils/directory-suggestions.js";
 import type { CheckoutDiffManager } from "./checkout-diff-manager.js";
 import type { Resolvable } from "./speech/provider-resolver.js";
@@ -290,6 +293,77 @@ function errorToFriendlyMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
   if (typeof error === "string") return error;
   return "Unknown error";
+}
+
+interface DirectorySuggestionsSearch {
+  options: SearchDirectoryEntriesOptions;
+  // Prepended to every result path, so results from an ancestor stay relative to the workspace.
+  pathPrefix: string;
+}
+
+function planDirectorySuggestionsSearch(input: {
+  cwd: string | undefined;
+  query: string;
+  matchMode: DirectorySuggestionMatchMode | undefined;
+}): DirectorySuggestionsSearch {
+  const homeRoot = process.env.HOME ?? homedir();
+  // readdir on TCC-protected folders under ~/Library blocks forever for a process that cannot
+  // show a consent prompt, and each blocked call holds a libuv threadpool thread.
+  const homeExclusions = process.platform === "darwin" ? [join(homeRoot, "Library")] : [];
+  const workspaceCwd = input.cwd?.trim();
+  if (!workspaceCwd) {
+    return {
+      pathPrefix: "",
+      options: {
+        root: homeRoot,
+        query: input.query,
+        pathFormat: "absolute",
+        pathQueryPolicy: "rooted",
+        blankQueryBehavior: "none",
+        rootAliases: ["~"],
+        confidentResultScanThreshold: 5_000,
+        excludedDiscoveryPaths: homeExclusions,
+      },
+    };
+  }
+
+  const workspaceRoot = expandTilde(workspaceCwd);
+  const workspaceOptions = {
+    pathFormat: "relative",
+    blankQueryBehavior: "children",
+    traversableHiddenDirectoryNames: WORKSPACE_SEARCH_HIDDEN_DIRECTORIES,
+    respectGitIgnore: true,
+  } as const;
+  // `@../sibling` in the composer reaches above the workspace. Suffix mode resolves file links in
+  // agent messages, and those stay inside the workspace.
+  const parentQuery =
+    input.matchMode === "suffix"
+      ? null
+      : resolveParentDirectoryQuery({ root: workspaceRoot, query: input.query });
+  if (!parentQuery) {
+    return {
+      pathPrefix: "",
+      options: {
+        ...workspaceOptions,
+        root: workspaceRoot,
+        query: input.query,
+        pathQueryPolicy: "slashes",
+      },
+    };
+  }
+  // An ancestor of the workspace can be the home folder, so it gets the home search's scan cap
+  // and exclusions.
+  return {
+    pathPrefix: parentQuery.pathPrefix,
+    options: {
+      ...workspaceOptions,
+      root: parentQuery.root,
+      query: parentQuery.query,
+      pathQueryPolicy: "rooted",
+      confidentResultScanThreshold: 5_000,
+      excludedDiscoveryPaths: homeExclusions,
+    },
+  };
 }
 
 function isAppVersionAtLeast(appVersion: string | null, minVersion: string): boolean {
@@ -5158,31 +5232,17 @@ export class Session {
     const { query, limit, requestId, cwd, includeFiles, includeDirectories, matchMode } = msg;
 
     try {
-      const workspaceCwd = cwd?.trim();
-      const searchesWorkspace = Boolean(workspaceCwd);
-      const homeRoot = process.env.HOME ?? homedir();
-      // readdir on TCC-protected folders under ~/Library blocks forever for a process that cannot
-      // show a consent prompt, and each blocked call holds a libuv threadpool thread.
-      const excludedDiscoveryPaths =
-        !searchesWorkspace && process.platform === "darwin" ? [join(homeRoot, "Library")] : [];
-      const entries = await searchDirectoryEntries({
-        root: workspaceCwd ? expandTilde(workspaceCwd) : homeRoot,
-        query,
-        pathFormat: searchesWorkspace ? "relative" : "absolute",
-        pathQueryPolicy: searchesWorkspace ? "slashes" : "rooted",
-        blankQueryBehavior: searchesWorkspace ? "children" : "none",
-        rootAliases: searchesWorkspace ? [] : ["~"],
-        traversableHiddenDirectoryNames: searchesWorkspace
-          ? WORKSPACE_SEARCH_HIDDEN_DIRECTORIES
-          : [],
-        confidentResultScanThreshold: searchesWorkspace ? undefined : 5_000,
-        respectGitIgnore: searchesWorkspace,
-        excludedDiscoveryPaths,
+      const search = planDirectorySuggestionsSearch({ cwd, query, matchMode });
+      const searchedEntries = await searchDirectoryEntries({
+        ...search.options,
         includeFiles,
         includeDirectories,
         matchMode,
         limit,
       });
+      const entries = search.pathPrefix
+        ? searchedEntries.map((entry) => ({ ...entry, path: `${search.pathPrefix}${entry.path}` }))
+        : searchedEntries;
       const directories = entries
         .filter((entry) => entry.kind === "directory")
         .map((entry) => entry.path);

@@ -176,6 +176,32 @@ const IGNORED_DIRECTORY_NAMES = new Set([
 const directoryListCache = new Map<string, DirectoryListCacheEntry>();
 const gitIgnoredPathsCache = new Map<string, GitIgnoredPathsCacheEntry>();
 
+export interface ParentDirectoryQuery {
+  root: string;
+  query: string;
+  pathPrefix: string;
+}
+
+// A query such as `../sibling/src` names a location above the search root, which no search under
+// that root can reach. Searching from the named ancestor instead, then prefixing results with the
+// same `../` segments, keeps returned paths relative to the original root.
+export function resolveParentDirectoryQuery(input: {
+  root: string;
+  query: string;
+}): ParentDirectoryQuery | null {
+  const segments = input.query.trim().replace(/\\/g, "/").split("/");
+  let levels = 0;
+  while (segments[levels] === "..") levels += 1;
+  if (levels === 0) return null;
+  return {
+    root: path.resolve(input.root, ...Array<string>(levels).fill("..")),
+    // `./` roots the rest of the query, so a typed parent such as `sibling/` anchors the walk
+    // instead of matching anywhere in the ancestor's tree.
+    query: `./${segments.slice(levels).join("/")}`,
+    pathPrefix: "../".repeat(levels),
+  };
+}
+
 // Discovery and retrieval filter differently, on purpose. Discovery — anything that ranks or
 // browses candidates the caller has not named — drops gitignored and hidden entries, so pickers
 // do not offer build output. Retrieval of a path the caller named exactly applies no ignore or

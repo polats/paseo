@@ -193,6 +193,47 @@ describe("file explorer", () => {
     }
   });
 
+  test("composer suggestions reach parent and sibling paths through ../", async () => {
+    const directory = tmpCwd();
+    const cwd = path.join(directory, "workspace");
+    const sibling = path.join(directory, "workspace-other");
+    try {
+      mkdirSync(cwd);
+      mkdirSync(path.join(sibling, "src"), { recursive: true });
+      mkdirSync(path.join(sibling, "srcs"));
+      writeFileSync(path.join(cwd, "visible.txt"), "inside payload\n");
+      writeFileSync(path.join(sibling, "src", "outside.txt"), "outside payload\n");
+      writeFileSync(path.join(sibling, "srcs", "outside.txt"), "decoy payload\n");
+
+      const browse = await ctx.client.getDirectorySuggestions({
+        cwd,
+        query: "../",
+        limit: 50,
+        includeFiles: true,
+        includeDirectories: true,
+      });
+      expect(browse.error).toBeNull();
+      expect(browse.entries).toEqual(
+        expect.arrayContaining([
+          { path: "../workspace", kind: "directory" },
+          { path: "../workspace-other", kind: "directory" },
+        ]),
+      );
+
+      const typed = await ctx.client.getDirectorySuggestions({
+        cwd,
+        query: "../workspace-other/src/out",
+        limit: 50,
+        includeFiles: true,
+        includeDirectories: true,
+      });
+      expect(typed.error).toBeNull();
+      expect(typed.entries).toEqual([{ path: "../workspace-other/src/outside.txt", kind: "file" }]);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   test.each([
     { description: "a long ASCII name", fileName: `${"a".repeat(236)}.txt` },
     { description: "an ordinary name", fileName: "notes.txt" },
