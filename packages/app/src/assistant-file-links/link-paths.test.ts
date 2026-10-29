@@ -21,4 +21,10 @@ describe("fileLinkPaths", () => {
       { relative: "/tmp/outside.txt", absolute: "/tmp/outside.txt" },
     );
   });
+
+  it("leaves a home-relative path for the host to expand", () => {
+    expect(
+      fileLinkPaths({ raw: "~/Downloads/page.html", path: "~/Downloads/page.html" }, WORKSPACE),
+    ).toEqual({ relative: "~/Downloads/page.html", absolute: "~/Downloads/page.html" });
+  });
 });

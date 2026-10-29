@@ -530,6 +530,20 @@ describe("editor target registry", () => {
     expect(runtime.openedPaths).toEqual(["/home/me/Downloads/contracts"]);
   });
 
+  it("reveals a home-relative file in the file manager", async () => {
+    const runtime = new FakeEditorTargets();
+    runtime.addPath("/repo");
+    runtime.addPath("/home/me/Downloads/page.html");
+
+    await openEditorTarget(
+      { editorId: "file-manager", workspacePath: "/repo", filePath: "~/Downloads/page.html" },
+      runtime,
+      [fileManagerTarget],
+    );
+
+    expect(runtime.revealedPaths).toEqual(["/home/me/Downloads/page.html"]);
+  });
+
   it("keeps the platform file-manager ids used by stored preferences", async () => {
     const macTargets = await listAvailableEditorTargets(new FakeEditorTargets("darwin"), [
       finderTarget,

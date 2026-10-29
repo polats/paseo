@@ -543,7 +543,7 @@ function isAllowedAbsolutePath(pathValue: string, workspaceRoot?: string): boole
   return comparePath === compareWorkspaceRoot || comparePath.startsWith(comparePrefix);
 }
 
-function isHomeRelativePath(pathValue: string): boolean {
+export function isHomeRelativePath(pathValue: string): boolean {
   return pathValue === "~" || pathValue.startsWith("~/") || pathValue.startsWith("~\\");
 }
 
