@@ -85,4 +85,11 @@ describe("built-in file panels", () => {
       ).toBeNull();
     },
   );
+
+  it.each(["mp4", "m4v", "webm", "mov"])("plays the video extension %s on web", (extension) => {
+    expect(panelId({ path: `/clip.${extension.toUpperCase()}`, kind: "binary" })).toBe(
+      "builtin:video",
+    );
+    expect(candidateIds({ path: "clip.mp4", kind: "text" })).toEqual(["builtin:source"]);
+  });
 });

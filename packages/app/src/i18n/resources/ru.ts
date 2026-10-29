@@ -1984,6 +1984,7 @@ export const ru: TranslationResources = {
           markdown: "Markdown",
           html: "HTML",
           image: "Изображение",
+          video: "Видео",
           source: "Исходный текст",
         },
       },

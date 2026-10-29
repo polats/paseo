@@ -280,6 +280,31 @@ describe("file explorer service", () => {
     }
   });
 
+  it.each([
+    ["clip.mp4", "video/mp4"],
+    ["clip.m4v", "video/mp4"],
+    ["clip.webm", "video/webm"],
+    ["clip.MOV", "video/quicktime"],
+  ])("reports %s as a %s binary across file reads", async (name, mimeType) => {
+    const root = await createTempDir("paseo-file-video-");
+    try {
+      // An ftyp box is printable ASCII, so content sniffing alone would call the file text.
+      await writeFile(path.join(root, name), Buffer.from("....ftypisom", "latin1"));
+      const target = { root, relativePath: name };
+      expect(await readExplorerFile(target)).toMatchObject({ kind: "binary", mimeType });
+      expect(await getExplorerFileVersion(target)).toMatchObject({ kind: "binary", mimeType });
+      await streamExplorerFile(target, async (file) => {
+        expect(file.kind).toBe("binary");
+        expect(file.mimeType).toBe(mimeType);
+        for await (const _chunk of file.chunks) {
+          // Drain the stream so its revision check runs.
+        }
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("classifies files with null bytes as binary", async () => {
     const root = await createTempDir("paseo-file-explorer-");
 

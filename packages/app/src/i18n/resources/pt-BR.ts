@@ -1985,6 +1985,7 @@ export const ptBR: TranslationResources = {
           markdown: "Markdown",
           html: "HTML",
           image: "Imagem",
+          video: "Vídeo",
           source: "Fonte",
         },
       },

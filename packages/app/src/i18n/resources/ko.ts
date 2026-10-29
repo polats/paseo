@@ -1962,6 +1962,7 @@ export const ko: TranslationResources = {
           markdown: "Markdown",
           html: "HTML",
           image: "이미지",
+          video: "동영상",
           source: "소스",
         },
       },

@@ -1952,6 +1952,7 @@ export const ar: TranslationResources = {
           markdown: "Markdown",
           html: "HTML",
           image: "صورة",
+          video: "فيديو",
           source: "المصدر",
         },
       },

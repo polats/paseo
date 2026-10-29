@@ -1971,6 +1971,7 @@ export const ja: TranslationResources = {
           markdown: "Markdown",
           html: "HTML",
           image: "画像",
+          video: "動画",
           source: "ソース",
         },
       },

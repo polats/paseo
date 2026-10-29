@@ -8,6 +8,7 @@ import { FileHtmlPreview } from "./html-preview";
 import { FilePanelLoading } from "./loading";
 import { FileMarkdownPreview } from "./markdown-preview";
 import { TextFilePanel, type TextFilePreviewProps } from "./source/panel";
+import { FileVideoPreview } from "./video-preview";
 import type { RenderingFilePanel, SourceFilePanel } from "./catalog";
 
 /** Source: the text file panel with no Preview, for text files no other built-in panel claims. */
@@ -65,6 +66,13 @@ function ImagePanel({ file }: PluginFilePanelProps) {
   return <ZoomableImage uri={url.url} testID="image-file-preview" />;
 }
 
+function VideoPanel({ file }: PluginFilePanelProps) {
+  const url = useFileUrl(file);
+  if (url.status === "loading") return <FilePanelLoading />;
+  if (url.status === "error") return <FilePanelError message={url.error.message} />;
+  return <FileVideoPreview uri={url.url} testID="video-file-preview" />;
+}
+
 function FilePanelError({ message }: { message: string }) {
   return (
     <View style={styles.centerState}>
@@ -77,6 +85,7 @@ const components = {
   "builtin:markdown": MarkdownPanel,
   "builtin:html": HtmlPanel,
   "builtin:image": ImagePanel,
+  "builtin:video": VideoPanel,
   "builtin:source": SourcePanel,
 };
 

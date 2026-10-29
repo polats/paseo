@@ -2000,6 +2000,7 @@ export const es: TranslationResources = {
           markdown: "Markdown",
           html: "HTML",
           image: "Imagen",
+          video: "Vídeo",
           source: "Código fuente",
         },
       },

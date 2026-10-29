@@ -1998,6 +1998,7 @@ export const fr: TranslationResources = {
           markdown: "Markdown",
           html: "HTML",
           image: "Image",
+          video: "Vidéo",
           source: "Source",
         },
       },

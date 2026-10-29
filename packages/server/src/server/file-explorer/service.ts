@@ -102,6 +102,9 @@ const BINARY_MIME_TYPES: Record<string, string> = {
   ".gz": "application/gzip",
   ".mp3": "audio/mpeg",
   ".mp4": "video/mp4",
+  ".m4v": "video/mp4",
+  ".webm": "video/webm",
+  ".mov": "video/quicktime",
   ".woff2": "font/woff2",
 };
 

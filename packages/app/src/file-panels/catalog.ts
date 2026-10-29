@@ -1,3 +1,4 @@
+import { isWeb } from "@/constants/platform";
 import type { FilePanelCandidate } from "./resolve";
 
 const renderingPanels = [
@@ -21,6 +22,16 @@ const renderingPanels = [
   },
 ] as const satisfies readonly FilePanelCandidate[];
 
+const videoPanel = {
+  id: "builtin:video",
+  builtin: true,
+  files: { extensions: ["mp4", "m4v", "webm", "mov"] },
+  fileKind: "binary",
+} as const satisfies FilePanelCandidate;
+
+// Only web has a video player, so native keeps showing that the file has no preview.
+const platformRenderingPanels = isWeb ? [videoPanel] : [];
+
 /**
  * Paseo's editor, the floor for text files: every text file no other built-in claims has it, so a
  * text file always opens with some panel. A built-in that claims a file owns its source view.
@@ -32,7 +43,7 @@ export const sourceFilePanel = {
   fileKind: "text",
 } as const satisfies FilePanelCandidate;
 
-export type RenderingFilePanel = (typeof renderingPanels)[number];
+export type RenderingFilePanel = (typeof renderingPanels)[number] | typeof videoPanel;
 export type SourceFilePanel = typeof sourceFilePanel;
 
 /**
@@ -42,5 +53,5 @@ export type SourceFilePanel = typeof sourceFilePanel;
 export function filePanelCatalog<Plugin extends FilePanelCandidate>(
   pluginPanels: readonly Plugin[],
 ): readonly (RenderingFilePanel | Plugin | SourceFilePanel)[] {
-  return [...renderingPanels, ...pluginPanels, sourceFilePanel];
+  return [...renderingPanels, ...platformRenderingPanels, ...pluginPanels, sourceFilePanel];
 }

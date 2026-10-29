@@ -1977,6 +1977,7 @@ export const en = {
           markdown: "Markdown",
           html: "HTML",
           image: "Image",
+          video: "Video",
           source: "Source",
         },
       },
