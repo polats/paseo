@@ -363,10 +363,10 @@ track phase.
 All sheets use the app-wide Gorhom modal provider through `IsolatedBottomSheetModal`, with no
 exceptions: one stack means a sheet opened from any sheet lands on top of it and uncovers it on
 close. This includes native centered dialogs: separate React Native Modals cannot present a
-root-owned sibling dialog over an existing iOS presenter. A sheet that must draw inside a subtree
-(the [sheet tabs](explorer-sidebar.md#sheets) draw inside the compact workspace column so their
-panels read the workspace providers) presents from inside a `SheetHostScope`, which moves the
-portal host and container measurement while the sheet still joins the same stack. That export is
+root-owned sibling dialog over an existing iOS presenter. `SheetHostScope` moves the portal host
+and container measurement while forwarding the same modal queue. Compact
+[workspace sheets](explorer-sidebar.md#sheets) use the app overlay host above both sidebars;
+wide layouts keep local geometry. That export is
 what `patches/@gorhom+bottom-sheet+*.patch` adds.
 
 A sheet whose owner may veto the close (unsaved work) passes `enableDismissOnClose={false}`. Every
@@ -409,6 +409,19 @@ never on web, where the desktop path uses a real portal. `menu-surface.tsx`
 bridges the menu's two contexts; the rest pass `null`.
 
 Wrapping providers _around_ the modal does nothing. They land on the wrong side.
+
+## Gotcha 8 — Read safe-area insets where the overlay draws
+
+A compact sheet tab's body (`SheetBottomInset` in `adaptive-modal-sheet.tsx`) pads the bottom
+inset and gives its content a bottom inset of 0, so the composer dock sits the same in a sheet as
+in a tab. An overlay opened from that content and calling `useSafeAreaInsets()` at its call site
+gets that 0 and draws over the navigation bar.
+
+- A Gorhom sheet reads the inset inside its children, which render in the app's sheet host. See
+  `CompactSheetBody`, `MenuSheetScrollView` and `ComboboxSheetFrame`.
+- An RN `Modal` passes the call site's context straight through, so put a `SafeAreaProvider`
+  inside it and read the inset below that. The modal is its own window, and the provider measures
+  it. See `attachment-lightbox.tsx`.
 
 ## Recipe for a new anchored panel
 
