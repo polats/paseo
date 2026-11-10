@@ -144,6 +144,7 @@ import {
   listImportableProviderSessions,
   normalizeImportAgentRequest,
 } from "./agent/import-sessions.js";
+import { listProjectSuggestions, ProjectSuggestionsRequestError } from "./project-suggestions.js";
 import {
   checkoutLiteFromGitSnapshot,
   checkoutFromPersistedWorkspacePlacement,
@@ -1116,6 +1117,7 @@ export class Session {
       logger: this.sessionLogger,
     });
     this.usageSession = new UsageSession({
+      isEnabled: () => daemonConfigStore.get().usage?.enabled !== false,
       emit: (msg) => this.emit(msg),
       runtime: pluginRuntime,
       logger: this.sessionLogger,
@@ -1203,11 +1205,11 @@ export class Session {
       terminalManager,
       emit: (msg) => this.emit(msg),
       hasBinaryChannel: () => this.onBinaryMessage !== null,
+      supportsChunkedReplay: (source) =>
+        this.supportsForSource(CLIENT_CAPS.terminalChunkedReplay, source),
       isPathWithinRoot: (rootPath, candidatePath) => this.isPathWithinRoot(rootPath, candidatePath),
       sessionLogger: this.sessionLogger,
       listTerminalWorkspaceRefs: () => this.listActiveWorkspaceRefs(),
-      clientSupportsWrapReflow: (source) =>
-        this.supportsForSource(CLIENT_CAPS.terminalReflowableSnapshot, source),
       getClientBufferedAmount: (source) => this.getTransportBufferedAmount(source),
     });
     this.agentDirectory = new AgentDirectory({
@@ -2063,6 +2065,24 @@ export class Session {
       (event) => {
         if (event.type === "timeline_replacement") {
           this.deliverTimelineReplacement(event.agentId, this.rewindInitiators.get(event.agentId));
+          return;
+        }
+
+        if (event.type === "agent_removed") {
+          if (event.internal) return;
+          void this.agentUpdates
+            .removeAgent(event.agentId)
+            .then(() => {
+              if (event.workspaceId)
+                return this.emitWorkspaceUpdateForWorkspaceId(event.workspaceId);
+              return undefined;
+            })
+            .catch((error) => {
+              this.sessionLogger.error(
+                { err: error, agentId: event.agentId },
+                "Failed to emit agent removal",
+              );
+            });
           return;
         }
 
@@ -3117,6 +3137,8 @@ export class Session {
         return this.handleFetchWorkspacesRequest(msg);
       case "project.list.request":
         return this.handleProjectListRequest(msg);
+      case "project.suggestions.request":
+        return this.handleProjectSuggestionsRequest(msg);
       case "paseo_worktree_list_request":
         return this.handlePaseoWorktreeListRequest(msg);
       case "paseo_worktree_archive_request":
@@ -3411,10 +3433,8 @@ export class Session {
   private async handleDeleteAgentRequest(agentId: string, requestId: string): Promise<void> {
     this.sessionLogger.info({ agentId }, `Deleting agent ${agentId} from registry`);
 
-    const knownWorkspaceId =
-      this.agentManager.getAgent(agentId)?.workspaceId ??
-      (await this.agentStorage.get(agentId))?.workspaceId ??
-      null;
+    const knownAgent =
+      this.agentManager.getAgent(agentId) ?? (await this.agentStorage.get(agentId));
 
     // File-backed storage still needs an early delete fence before closeAgent().
     beginAgentDeleteIfSupported(this.agentStorage, agentId);
@@ -3435,6 +3455,8 @@ export class Session {
     try {
       await this.agentStorage.remove(agentId);
       await this.agentManager.deleteAgentState(agentId);
+      // Directory removal is daemon-wide; agent_deleted below stays a source-scoped RPC reply.
+      if (knownAgent) this.agentManager.notifyAgentRemoved(knownAgent);
     } catch (error) {
       this.sessionLogger.error({ err: error, agentId }, `Failed to fully delete agent ${agentId}`);
     }
@@ -3446,12 +3468,6 @@ export class Session {
         requestId,
       },
     });
-
-    await this.agentUpdates.removeAgent(agentId);
-
-    if (knownWorkspaceId) {
-      await this.emitWorkspaceUpdateForWorkspaceId(knownWorkspaceId);
-    }
   }
 
   private async handleArchiveAgentRequest(agentId: string, requestId: string): Promise<void> {
@@ -4573,7 +4589,10 @@ export class Session {
         },
       );
       createdAgentId = snapshot.id;
-      await this.agentUpdates.forwardLiveAgent(snapshot);
+      // `snapshot` predates the initial prompt; subscribers keep the last state they receive.
+      await this.agentUpdates.forwardLiveAgent(
+        this.agentManager.getAgent(snapshot.id) ?? liveSnapshot,
+      );
       if (resolvedIntent.createdDirectoryWorkspace && trimmedPrompt) {
         this.workspaceAutoName.scheduleForDirectory(
           {
@@ -6592,6 +6611,37 @@ export class Session {
           requestType: "project.list.request",
           error: error instanceof Error ? error.message : "Failed to list projects",
           code: "project_list_failed",
+        },
+      });
+    }
+  }
+
+  private async handleProjectSuggestionsRequest(
+    request: Extract<SessionInboundMessage, { type: "project.suggestions.request" }>,
+  ): Promise<void> {
+    try {
+      const result = await listProjectSuggestions({
+        request,
+        agentManager: this.agentManager,
+        projectRegistry: this.projectRegistry,
+        workspaceGitService: this.workspaceGitService,
+      });
+      this.emit({
+        type: "project.suggestions.response",
+        payload: { requestId: request.requestId, ...result },
+      });
+    } catch (error) {
+      this.sessionLogger.error({ err: error }, "Failed to handle project.suggestions.request");
+      this.emit({
+        type: "rpc_error",
+        payload: {
+          requestId: request.requestId,
+          requestType: request.type,
+          error: error instanceof Error ? error.message : "Failed to list project suggestions",
+          code:
+            error instanceof ProjectSuggestionsRequestError
+              ? error.code
+              : "project_suggestions_failed",
         },
       });
     }
