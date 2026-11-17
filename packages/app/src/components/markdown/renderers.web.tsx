@@ -55,8 +55,7 @@ function WebLinkBody({ link, anchorProps, children }: LinkRendererProps) {
   // A forge reference like `#12` carries its web URL so hover, copy and new-tab opens work.
   const forgeUrl = link.sourceType === "text" ? forgeShorthand?.resolve(link.url) : null;
   const source = useMemo(
-    () =>
-      forgeUrl ? markdownLinkSource(forgeUrl) : markdownLinkSource(link.url, link.sourceType),
+    () => (forgeUrl ? markdownLinkSource(forgeUrl) : markdownLinkSource(link.url, link.sourceType)),
     [forgeUrl, link.url, link.sourceType],
   );
   const fileLink = useFileLink(source);
