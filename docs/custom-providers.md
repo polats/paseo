@@ -308,9 +308,69 @@ requires_openai_auth = false
 ### Notes
 
 - The endpoint must speak the OpenAI **Responses API**, not just chat completions. Many gateways (OpenRouter, LiteLLM) support both — pick the Responses-compatible route.
-- Set `models` explicitly. Custom endpoints expose their own model IDs (`anthropic/claude-opus-4-7`, `qwen/qwen3-coder`, `local/llama`, etc.), and Paseo does not discover them automatically for Codex.
+- Set `models` explicitly with the environment-based setup above. If your endpoint publishes a Codex-native catalog, use the [live catalog setup](#use-a-live-codex-model-catalog).
 - To run multiple endpoints side-by-side, define multiple entries that each extend `"codex"` with different IDs, labels, and env. Each appears as its own provider in the app.
 - If you only want to override the binary (e.g. a nightly Codex build) without changing the endpoint, omit `OPENAI_BASE_URL` and use `command` instead — see [Custom binary for a provider](#custom-binary-for-a-provider).
+
+### Use a live Codex model catalog
+
+If your proxy serves both the Responses API and a Codex-native model catalog, configure them in a dedicated `CODEX_HOME` on the Paseo daemon host. Paseo gets the picker-visible models and their reasoning options from the Codex app-server on provider refresh. Use a Codex CLI version that supports `model_catalog_url`. A standard OpenAI-compatible `/v1/models` list uses a different format.
+
+Create `config.toml` in the dedicated Codex home using the URLs supplied by your proxy.
+
+```toml
+model_provider = "proxy"
+
+[shell_environment_policy]
+exclude = ["PROXY_API_KEY"]
+
+[model_providers.proxy]
+name = "Codex Proxy"
+base_url = "https://proxy.example.com/v1"
+wire_api = "responses"
+model_catalog_url = "https://proxy.example.com/codex/models"
+env_key = "PROXY_API_KEY"
+requires_openai_auth = false
+```
+
+On Linux or macOS, keep the inference key in a user-owned `proxy-key.env` file inside that directory. Restrict the file to mode `600` and use a shell assignment like `PROXY_API_KEY='your-inference-key'`. Create an executable launcher named `launch-codex` next to it. The launcher reads the key each time Codex starts, including when Paseo starts it to refresh the catalog.
+
+```sh
+#!/bin/sh
+set -eu
+. "${CODEX_HOME:?Set CODEX_HOME}/proxy-key.env"
+: "${PROXY_API_KEY:?Set PROXY_API_KEY in proxy-key.env}"
+export PROXY_API_KEY
+exec /absolute/path/to/codex "$@"
+```
+
+Use the launcher in `$PASEO_HOME/config.json` and set `CODEX_HOME` to the absolute path on the daemon host. Leave `models`, `OPENAI_BASE_URL`, and `OPENAI_API_KEY` out of this provider entry so the app-server can use the catalog and routing from its Codex config.
+
+```json
+{
+  "agents": {
+    "providers": {
+      "codex-proxy": {
+        "extends": "codex",
+        "label": "Codex Proxy",
+        "command": ["/absolute/path/to/codex-proxy/launch-codex"],
+        "env": {
+          "CODEX_HOME": "/absolute/path/to/codex-proxy"
+        }
+      }
+    }
+  }
+}
+```
+
+Apply the configuration and check the catalog on the daemon that owns it.
+
+```sh
+paseo reload
+paseo provider models codex-proxy --thinking
+```
+
+Select **Codex Proxy** when creating an agent and send a short prompt to verify inference. If the proxy rejects an advertised reasoning level, select a level the proxy accepts. To set a working default, add `model` and `model_reasoning_effort` at the top level of the dedicated `config.toml`, then refresh the provider in Paseo.
 
 ---
 
