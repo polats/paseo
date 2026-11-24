@@ -15,13 +15,14 @@ import type {
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { useFileLink } from "@/assistant-file-links";
 import { FileLinkContextMenuContent } from "@/assistant-file-links/context-menu";
+import { MARKDOWN_COPY_RECOGNIZED_LINK_ATTRIBUTE } from "@/assistant-selection-copy/markup";
 import { ContextMenu, useContextMenu } from "@/components/ui/context-menu";
 import { useForgeShorthand } from "@/git/forge-shorthand";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import { HighlightedCodeBlock } from "@/components/highlighted-code-block";
 import type { Theme } from "@/styles/theme";
 import { MermaidFence } from "./fence/mermaid";
-import { markdownLinkSource } from "./source";
+import { isRecognizedLink, markdownLinkSource } from "./source";
 
 const ThemedCodeBlock = withUnistyles(HighlightedCodeBlock);
 const codeStyle = (theme: Theme) => ({
@@ -83,9 +84,18 @@ function WebLinkBody({ link, anchorProps, children }: LinkRendererProps) {
     }),
     [anchorProps.style, hovered],
   );
+  // Selection copy pastes a link Paseo recognized as the text the reply showed.
+  const recognized = isRecognizedLink(link);
+  const copyAnchorProps = useMemo(
+    () =>
+      recognized
+        ? { ...anchorProps, [MARKDOWN_COPY_RECOGNIZED_LINK_ATTRIBUTE]: "true" }
+        : anchorProps,
+    [anchorProps, recognized],
+  );
   const anchor = (
     <a
-      {...anchorProps}
+      {...copyAnchorProps}
       href={forgeUrl ?? anchorProps.href}
       style={anchorStyle}
       onMouseEnter={handleMouseEnter}

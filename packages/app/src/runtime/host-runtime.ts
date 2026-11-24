@@ -28,7 +28,12 @@ import {
   type HostProfile,
   type UnreadableHostEntries,
 } from "@/types/host-connection";
-import { defaultHostAppearance, type HostBadgeDisplay, type HostColor } from "@/hosts/appearance";
+import {
+  defaultHostAppearance,
+  type HostBadgeDisplay,
+  type HostColor,
+  type HostIcon,
+} from "@/hosts/appearance";
 import {
   buildDaemonWebSocketUrl,
   buildRelayWebSocketUrl,
@@ -55,10 +60,8 @@ import {
   buildDesktopDaemonTransportUrl,
   createDesktopDaemonTransportFactory,
 } from "@/desktop/daemon/desktop-daemon-transport";
-import { getDesktopHost } from "@/desktop/host";
 import { readDesktopManagedLocalCredential } from "@/desktop/daemon/local-credential";
 import { CLIENT_CAPS } from "@getpaseo/protocol/client-capabilities";
-import { BROWSER_AUTOMATION_COMMAND_NAMES } from "@getpaseo/protocol/browser-automation/rpc-schemas";
 import {
   useSessionStore,
   toDaemonServerInfo,
@@ -74,7 +77,10 @@ import {
   invalidateServerDataQueriesAfterReconnect,
   mountServerDataPushRouter,
 } from "@/data/push-router";
-import { mountBrowserAutomationDaemonClientHandler } from "@/desktop/browser/automation/handler";
+import {
+  getDesktopBrowserHostRegistration,
+  mountBrowserAutomationDaemonClientHandler,
+} from "@/desktop/browser/automation/handler";
 import { schedulesQueryBaseKey } from "@/schedules/aggregated-schedules";
 import { dispatchComposerAgentMessage, sendQueuedComposerMessageNow } from "@/composer/actions";
 import { createMessageSubmissionWriter } from "@/composer/submission/writer";
@@ -570,19 +576,10 @@ function probeIntervalForConnection(
 function createDefaultDeps(
   resolveOrigin: (serverId: string) => DaemonClient | null = () => null,
 ): HostRuntimeControllerDeps {
-  const browserHostAvailable =
-    typeof getDesktopHost()?.browser?.executeAutomationCommand === "function";
-  const browserAutomationCapabilities = browserHostAvailable
-    ? {
-        [CLIENT_CAPS.browserHost]: {
-          supportedCommands: [...BROWSER_AUTOMATION_COMMAND_NAMES],
-          hostKind: "desktop app",
-        },
-      }
-    : undefined;
-  const appCapabilities = {
-    ...browserAutomationCapabilities,
-  };
+  const browserHostRegistration = getDesktopBrowserHostRegistration();
+  const appCapabilities = browserHostRegistration
+    ? { [CLIENT_CAPS.browserHost]: browserHostRegistration }
+    : {};
 
   return {
     createClient: ({ host, connection, clientId, runtimeGeneration }) => {
@@ -706,12 +703,14 @@ function createDefaultDeps(
         queryClient,
         serverId: host.serverId,
       });
-      if (!browserAutomationCapabilities) {
+      if (!browserHostRegistration) {
         return unmountServerData;
       }
-      const unmountBrowserAutomation = mountBrowserAutomationDaemonClientHandler(client, {
-        serverId: host.serverId,
-      });
+      const unmountBrowserAutomation = mountBrowserAutomationDaemonClientHandler(
+        client,
+        browserHostRegistration,
+        { serverId: host.serverId },
+      );
       return () => {
         unmountBrowserAutomation();
         unmountServerData();
@@ -951,6 +950,56 @@ export class HostRuntimeController {
     await this.switchToConnection(input);
   }
 
+  /**
+   * Measures the active connection's round-trip time when the host is online and no sample has
+   * landed yet (for example right after connecting, before the first heartbeat interval fires).
+   */
+  async refreshActiveLatency(): Promise<void> {
+    const activeConnectionId = this.snapshot.activeConnectionId;
+    const activeClient = this.snapshot.client;
+    if (
+      this.snapshot.connectionStatus !== "online" ||
+      !activeConnectionId ||
+      !activeClient ||
+      activeClient.getConnectionState().status !== "connected"
+    ) {
+      return;
+    }
+    const existing = this.snapshot.probeByConnectionId.get(activeConnectionId);
+    if (existing?.status === "available") {
+      return;
+    }
+    const existingRtt = activeClient.getLastLivenessRttMs();
+    if (existingRtt !== null) {
+      this.recordActiveLatencySample(activeConnectionId, existingRtt);
+      return;
+    }
+    try {
+      const rttMs = await activeClient.measureLatency({ timeoutMs: 3_000 });
+      if (
+        this.snapshot.activeConnectionId !== activeConnectionId ||
+        this.snapshot.client !== activeClient ||
+        this.snapshot.connectionStatus !== "online"
+      ) {
+        return;
+      }
+      this.recordActiveLatencySample(activeConnectionId, rttMs);
+    } catch {
+      // A latency probe never drives teardown; the heartbeat owns liveness.
+    }
+  }
+
+  private setConnectionProbe(connectionId: string, probe: ConnectionProbeState): void {
+    const probeByConnectionId = new Map(this.snapshot.probeByConnectionId);
+    probeByConnectionId.set(connectionId, probe);
+    this.updateSnapshot({ probeByConnectionId });
+  }
+
+  private recordActiveLatencySample(connectionId: string, rttMs: number): void {
+    this.recordActiveRttSample(rttMs, performance.now());
+    this.setConnectionProbe(connectionId, { status: "available", latencyMs: rttMs });
+  }
+
   async runProbeCycleNow(): Promise<void> {
     if (this.probeCycleInFlight) {
       return this.probeCycleInFlight;
@@ -1007,30 +1056,32 @@ export class HostRuntimeController {
       return;
     }
 
-    const probeByConnectionId = new Map(this.snapshot.probeByConnectionId);
+    const initialProbes = new Map(this.snapshot.probeByConnectionId);
     for (const connection of connectionsToProbe) {
       this.connectionLastProbedAt.set(connection.id, performance.now());
-      const existingProbe = probeByConnectionId.get(connection.id);
+      const existingProbe = initialProbes.get(connection.id);
       const shouldPreserveActiveLatency =
         isOnline && connection.id === activeConnectionId && existingProbe?.status === "available";
       if (!shouldPreserveActiveLatency) {
-        probeByConnectionId.set(connection.id, {
+        initialProbes.set(connection.id, {
           status: "pending",
           latencyMs: null,
         });
       }
     }
-    this.updateSnapshot({ probeByConnectionId: new Map(probeByConnectionId) });
+    this.updateSnapshot({ probeByConnectionId: initialProbes });
 
     let remaining = connectionsToProbe.length;
     let probeAuthFailure: "password_required" | "incorrect_password" | null = null;
     let activationLock: Promise<void> | null = null;
 
-    const publishProbeState = (): void => {
+    // Merge each connection result into the live snapshot map so a slow probe on another
+    // connection cannot overwrite a fresher sample (e.g. from refreshActiveLatency) on the active one.
+    const publishConnectionProbe = (connectionId: string, probe: ConnectionProbeState): void => {
       if (!this.isCurrentProbeRequest(requestVersion)) {
         return;
       }
-      this.updateSnapshot({ probeByConnectionId: new Map(probeByConnectionId) });
+      this.setConnectionProbe(connectionId, probe);
     };
 
     const maybeActivateFirstAvailable = async (
@@ -1059,6 +1110,7 @@ export class HostRuntimeController {
         return;
       }
 
+      const probeByConnectionId = new Map(this.snapshot.probeByConnectionId);
       const currentActiveConnectionId = this.snapshot.activeConnectionId;
       if (currentActiveConnectionId) {
         this.reconcileActiveProbeWithClient(currentActiveConnectionId, probeByConnectionId);
@@ -1214,11 +1266,10 @@ export class HostRuntimeController {
 
             if (activeClient) {
               if (activeClient.getConnectionState().status !== "connected") {
-                probeByConnectionId.set(connection.id, {
+                publishConnectionProbe(connection.id, {
                   status: "unavailable",
                   latencyMs: null,
                 });
-                publishProbeState();
                 return;
               }
               const rttMs = activeClient.getLastLivenessRttMs();
@@ -1227,11 +1278,10 @@ export class HostRuntimeController {
               }
               if (rttMs !== null) {
                 this.recordActiveRttSample(rttMs, performance.now());
-                probeByConnectionId.set(connection.id, {
+                publishConnectionProbe(connection.id, {
                   status: "available",
                   latencyMs: rttMs,
                 });
-                publishProbeState();
               }
               return;
             }
@@ -1241,11 +1291,10 @@ export class HostRuntimeController {
               return;
             }
 
-            probeByConnectionId.set(connection.id, {
+            publishConnectionProbe(connection.id, {
               status: "available",
               latencyMs: rttMs,
             });
-            publishProbeState();
           } catch (error) {
             if (this.isCurrentProbeRequest(requestVersion)) {
               const authFailure = getConnectionAuthFailureReason(error);
@@ -1253,11 +1302,10 @@ export class HostRuntimeController {
                 this.authRejectedConnectionIds.add(connection.id);
                 probeAuthFailure = authFailure;
               }
-              probeByConnectionId.set(connection.id, {
+              publishConnectionProbe(connection.id, {
                 status: "unavailable",
                 latencyMs: null,
               });
-              publishProbeState();
             }
           } finally {
             if (connectedClient && shouldCloseClient) {
@@ -1984,11 +2032,9 @@ export class HostRuntimeStore {
           shouldPersistHosts = true;
         }
       }
-      this.hosts = profiles;
-      this.replicaCache.setHosts(profiles.map((profile) => profile.serverId));
       projectIconCache.setHosts(profiles.map((profile) => profile.serverId));
       await projectIconCache.restore();
-      this.syncHosts(profiles);
+      this.setHostsAndSync(profiles);
       for (const profile of profiles) {
         void this.directorySyncByServer
           .get(profile.serverId)
@@ -2444,11 +2490,31 @@ export class HostRuntimeStore {
     }));
   }
 
+  async setHostIcon(serverId: string, icon: HostIcon | null): Promise<void> {
+    await this.updateHostAppearance(serverId, (host) => {
+      const { icon: _previousIcon, ...rest } = host.appearance;
+      return {
+        ...host,
+        appearance: icon ? { ...rest, icon } : rest,
+      };
+    });
+  }
+
   async setHostBadgeDisplay(serverId: string, badgeDisplay: HostBadgeDisplay): Promise<void> {
     await this.updateHostAppearance(serverId, (host) => ({
       ...host,
       appearance: { ...host.appearance, badgeDisplay },
     }));
+  }
+
+  refreshActiveLatencies(serverIds?: readonly string[]): void {
+    const targets = serverIds ?? this.hosts.map((host) => host.serverId);
+    for (const serverId of targets) {
+      const controller = this.controllers.get(serverId);
+      if (controller) {
+        void controller.refreshActiveLatency();
+      }
+    }
   }
 
   private updateHostAppearance(
@@ -3304,6 +3370,7 @@ export interface HostMutations {
   beginLinkPairing: () => LinkPairing;
   renameHost: (serverId: string, label: string) => Promise<void>;
   setHostColor: (serverId: string, color: HostColor) => Promise<void>;
+  setHostIcon: (serverId: string, icon: HostIcon | null) => Promise<void>;
   setHostBadgeDisplay: (serverId: string, badgeDisplay: HostBadgeDisplay) => Promise<void>;
   removeHost: (serverId: string) => Promise<void>;
   removeConnection: (serverId: string, connectionId: string) => Promise<void>;
@@ -3319,6 +3386,7 @@ export function useHostMutations(): HostMutations {
       beginLinkPairing: () => store.beginLinkPairing(),
       renameHost: (serverId, label) => store.renameHost(serverId, label),
       setHostColor: (serverId, color) => store.setHostColor(serverId, color),
+      setHostIcon: (serverId, icon) => store.setHostIcon(serverId, icon),
       setHostBadgeDisplay: (serverId, badgeDisplay) =>
         store.setHostBadgeDisplay(serverId, badgeDisplay),
       removeHost: (serverId) => store.removeHost(serverId),
